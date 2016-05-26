@@ -140,12 +140,27 @@ function copyFile(src, dest) {
   fs.copySync(path.resolve(src), path.resolve(dest));
 }
 
-// Removes the compiled test files if its safe to do so, then calls a callback. It's not safe
-// to remove the compiled files if we're running in watch mode, as webpack relies on them.
-function removeCompiledTests(watching,  cb) {
-  if (!watching) {
-    rimraf(testDirectory, cb || function() {});
+function globForCachebustedTests(rootDirectory) {
+  var glob = rootDirectory;
+  if (glob[glob.length - 1] !== '/') {
+    glob += '/';
   }
+
+  return glob + '**/*.compiledtest-*';
+}
+
+// Removes all compiled test files if its safe to do so, then calls a callback. It's not safe
+// to remove the original compiled files if we're running in watch mode, as webpack relies on them.
+// We can however remove the cache-busted versions of the files to free up space.
+function removeCompiledTests(watching,  cb) {
+  var callback = cb || function() {};
+
+  if (watching) {
+    rimraf(globForCachebustedTests(testDirectory), callback);
+    return;
+  }
+
+  rimraf(testDirectory, callback);
 }
 
 // Mocha outputs to console by default. mochaNotifier will add node-notifier notifications,
@@ -164,7 +179,7 @@ build(makeConfig(builds, extensions), function(stats) {
 
     var mochaInstance = notifyingMochaInstance();
     stats.assets.forEach(function(asset) {
-      mochaInstance.addFile(cachebustTestFile(asset.name)));
+      mochaInstance.addFile(cachebustTestFile(asset.name));
     });
 
     mochaInstance.run()
