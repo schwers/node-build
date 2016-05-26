@@ -116,14 +116,16 @@ if (argv.watch) {
 
 
 // Given the path of a source file, copies its compiled test file to a new path with a cache buster (timestamp).
-// This is necessary because we want to be able to run tests in a watcher mode, and Mocha has
+// This is necessary because we want to be able to run tests in watch mode, and Mocha has
 // some caching going on that's dependant on the filename (likely because `require` caches on the filename)
 function cachebustTestFile(filePath) {
   return cachebustFile(testFilePath(filePath));
 }
 
 function cachebustFile(srcPath) {
-  return copyFile(srcPath, cacheBustedPath(srcPath));
+  var newPath = cacheBustedPath(srcPath);
+  copyFile(srcPath, newPath);
+  return newPath;
 }
 
 function testFilePath(filePath) {
@@ -135,15 +137,11 @@ function cacheBustedPath(srcPath) {
 }
 
 function copyFile(src, dest) {
-  return new Promise(function(resolve, reject) {
-    fs.copy(path.resolve(src), path.resolve(dest), function() {
-      resolve(dest);
-    });
-  })
+  fs.copySync(path.resolve(src), path.resolve(dest));
 }
 
 // Removes the compiled test files if its safe to do so, then calls a callback. It's not safe
-// to remove the compiled files if we're running in watch mode, as webpack relies on them;
+// to remove the compiled files if we're running in watch mode, as webpack relies on them.
 function removeCompiledTests(watching,  cb) {
   if (!watching) {
     rimraf(testDirectory, cb || function() {});
@@ -165,17 +163,14 @@ build(makeConfig(builds, extensions), function(stats) {
     ));
 
     var mochaInstance = notifyingMochaInstance();
-    var addFileToMocha = mochaInstance.addFile.bind(mochaInstance);
-    var promises = [];
     stats.assets.forEach(function(asset) {
-      promises.push(cachebustTestFile(asset.name).then(addFileToMocha));
+      mochaInstance.addFile(cachebustTestFile(asset.name)));
     });
-    Promise.all(promises).then(function() {
-      mochaInstance.run()
-        .on('end', function() {
-          removeCompiledTests(extensions.watch);
-        });
-    });
+
+    mochaInstance.run()
+      .on('end', function() {
+        removeCompiledTests(extensions.watch);
+      });
   }
 });
 
