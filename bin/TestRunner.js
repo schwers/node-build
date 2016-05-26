@@ -36,6 +36,47 @@ function copyFile(src, dest) {
   })
 }
 
+// Mocha outputs to console by default. mochaNotifier will add node-notifier notifications,
+// but we need to tell it to also pass through to spec so that results are still console.log'd
+function notifyingMochaInstance() {
+  return new Mocha({ reporter: mochaNotifier.decorate('spec') })
+}
+
+function logTestsRunning() {
+  console.log(colors.magenta(
+    '\n   *******************************' +
+    '\n   *        RUNNING TESTS        *' +
+    '\n   *******************************'
+  ));
+}
+
+// Given the md5 of a file, generates a cache buster.
+// Assumes that the file test file this is being run for has either:
+//    a) not been run or b) failed the last time it was run with this md5.
+// This needs to know if the file has already been tested because Mocha's test runner
+// has caching per file name, and in case (b) we want to re-show the failed test reports.
+function cachebuster(md5, testedFile) {
+  var parts = [md5];
+
+  if (testedFile) {
+    parts.push((new Date()).getTime());
+  }
+
+  return '-' +  parts.join('-');
+}
+
+function cachebustedPath(testPath, md5, testedFile) {
+  return testPath + cachebuster(md5, testedFile);
+}
+
+// Given a test object from mocha, extracts the md5 we've inserted for cache busting
+function testToMD5(test) {
+  var match = test.file.match(/-([^-]+)(-.+)?$/);
+  if (match) {
+    return match[1];
+  }
+}
+
 function globForCachebustedTests(rootDirectory) {
   var glob = rootDirectory;
   if (glob[glob.length - 1] !== '/') {
@@ -56,106 +97,63 @@ function removeCompiledTests(watching,  cb) {
     return;
   }
 
-  rimraf(testDirectory, cb || function() {});
+  rimraf(testDirectory, callback);
 }
 
-
-// Mocha outputs to console by default. mochaNotifier will add node-notifier notifications,
-// but we need to tell it to also pass through to spec so that results are still console.log'd
-function notifyingMochaInstance() {
-  return new Mocha({ reporter: mochaNotifier.decorate('spec') })
-}
-
-function logTestsRunning() {
-  console.log(colors.magenta(
-    '\n   *******************************' +
-    '\n   *        UPDATNG TESTS        *' +
-    '\n   *******************************'
-  ));
-}
-
+// TestRunner returns a function that takes the stats object from `build`, and runs tests.
+// In watch mode, this needs to track file pass / fail states across incremental builds, and this is ES5,
+// so a simple closure is used instead of a class.
 module.exports = function TestRunner(watchMode) {
+  // A map of test file md5 to test pass / fail. We track the test files by md5
+  // so we don't re-run tests for files that haven't changed (unless we want to re-show the errors)
   var md5ToSucess = {};
 
-  function shouldRunTests(md5) {
-    return !md5ToSucess[md5]; // note, unseen files will return true (!undefined)
+  // A file only needs to be run through mocha if we haven't seen it before, or if it failed last time.
+  // By re-running for tests that have failed, the error messages will show up in your console / notifications
+  // so you can see the error info.
+  function needsTesting(md5) {
+    return !md5ToSucess[md5];
   }
 
   function testedFile(md5) {
     return md5ToSucess[md5] !== undefined;
   }
 
-  function cachebustedPath(testPath, sourceFileMD5) {
-    return testPath + cachebuster(sourceFileMD5)
-  }
-
-  // Given the md5 of a file, generates a cache buster.
-  // Assumes that the file test file this is being run for has either:
-  //    a) not been run or b) failed the last time it was run with this md5.
-  // This needs to check what files have already been tested because Mocha's test runner
-  // has caching per file name, and in case (b) we want to re-show the failed test reports.
-  // (If there was no fallback cache buster, and we're in case (b), we know those contents failed)
-  function cachebuster(md5) {
-    var parts = [md5];
-
-    if (testedFile(md5)) {
-      parts.push((new Date()).getTime());
-    }
-
-    return '-' +  parts.join('-');
-  }
-
-  function runTestIfNeeded(srcPath, addFileToMocha) {
+  // Takes the path to a test file, and if needed, prepares its compiled version
+  // for Mocha. For a compiled test file to be ready for mocha, it needs to be copied to a
+  // new path that has a cachebuster, because Mocha's test runner caches by filename.
+  function prepareTestForMochaIfNeeded(srcPath) {
     var testPath = testFilePath(srcPath);
-
-    return new Promise(function(resolve, reject) {
-      md5FileContents(testPath).then(function(md5) {
-        console.log('should test file?', testPath, md5);
-        if (shouldRunTests(md5)) {
-          console.log('yes! copying');
-          copyFile(testPath, cachebustedPath(testPath, md5)).then(function(newPath) {
-            console.log('adding to mocha?', newPath)
-            addFileToMocha(newPath);
-            resolve();
-          });
-
-          return;
-        }
-
-        console.log('no, resolving early');
-        resolve();
-      })
+    return md5FileContents(testPath).then(function(md5) {
+      if (needsTesting(md5)) {
+        return copyFile(testPath, cachebustedPath(testPath, md5, testedFile(md5)));
+      }
     });
   }
 
-  function testToMD5(test) {
-    var match = test.file.match(/-([^-]+)(-.+)?$/);
-    if (match) {
-      return match[1];
-    }
-  }
-
-  function updateTests(test, passed)  {
-    console.log('tests ran!', passed);
+  function recordTestResult(test)  {
+    var passed = test.state === 'passed';
     var testMD5 = testToMD5(test);
 
-    if (testMD5) {
-      console.log('updating bookkeeping', testMD5);
+    if (testMD5) { // this should always exist
       md5ToSucess[testMD5] = passed;
     }
   }
 
-  function prepareTests(assets, addFileToMocha) {
+  function decideWhatTestsToRun(assets, addFileToMocha) {
     var promises = [];
-    console.log('files changed, checking tests', md5ToSucess);
     assets.forEach(function(asset) {
-      promises.push(runTestIfNeeded(asset.name, addFileToMocha));
+      promises.push(prepareTestForMochaIfNeeded(asset.name).then(function(runnableTestPath) {
+        if (runnableTestPath) {
+          addFileToMocha(runnableTestPath);
+        }
+      }));
     });
 
     return Promise.all(promises);
   }
 
-  // setup our cleanup hook, because we can't remove compiled test files when we're in watch mode
+  // setup our cleanup hook, because we can't remove all compiled test files when we're in watch mode
   process.on('SIGINT', function() {
     if (watchMode) {
       removeCompiledTests(false, process.exit); // remove everything now that we're done
@@ -165,24 +163,21 @@ module.exports = function TestRunner(watchMode) {
     process.exit();
   });
 
+  // Use this as the callback to `build`
   return function(stats) {
     logTestsRunning();
 
     var mochaInstance = notifyingMochaInstance();
     var addFileToMocha = mochaInstance.addFile.bind(mochaInstance);
 
-    prepareTests(stats.assets, addFileToMocha).then(function() {
+    decideWhatTestsToRun(stats.assets, addFileToMocha).then(function() {
       mochaInstance
         .run()
         .on('end', function() {
           removeCompiledTests(watchMode);
         })
-        .on('pass', function(tests) {
-          updateTests(tests, true);
-        })
-        .on('fail', function(tests) {
-          updateTests(tests, false);
-        });
+        .on('pass', recordTestResult)
+        .on('fail', recordTestResult);
     });
   }
 };
