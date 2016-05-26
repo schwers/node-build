@@ -4,7 +4,6 @@ var fs = require('fs');
 var path = require('path');
 var debug = require('debug')('blueprints');
 
-
 var build = require('../lib/build');
 var makeBuild = require('../lib/makeBuild').makeBuild;
 var configs = require('../lib/configs');
