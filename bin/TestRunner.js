@@ -140,19 +140,6 @@ module.exports = function TestRunner(watchMode) {
     }
   }
 
-  function decideWhatTestsToRun(assets, addFileToMocha) {
-    var promises = [];
-    assets.forEach(function(asset) {
-      promises.push(prepareTestForMochaIfNeeded(asset.name).then(function(runnableTestPath) {
-        if (runnableTestPath) {
-          addFileToMocha(runnableTestPath);
-        }
-      }));
-    });
-
-    return Promise.all(promises);
-  }
-
   // setup our cleanup hook, because we can't remove all compiled test files when we're in watch mode
   process.on('SIGINT', function() {
     if (watchMode) {
@@ -168,7 +155,20 @@ module.exports = function TestRunner(watchMode) {
     logTestsRunning();
 
     var mochaInstance = notifyingMochaInstance();
-    var addFileToMocha = mochaInstance.addFile.bind(mochaInstance);
+
+    function addFileToMocha(filePathPromise) {
+      return filePathPromise.then(function(testPathOrNil) {
+        if (testPathOrNil) {
+          mochaInstance.addFile(testPathOrNil);
+        }
+      });
+    }
+
+    function testFromAsset(asset) { return asset.name; }
+
+    function decideWhatTestsToRun(assets, addFileToMocha) {
+      return Promise.all(assets.map(testFromAsset).map(prepareTestForMochaIfNeeded).map(addFileToMocha));
+    }
 
     decideWhatTestsToRun(stats.assets, addFileToMocha).then(function() {
       mochaInstance
