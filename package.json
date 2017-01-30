@@ -53,6 +53,7 @@
     "style-loader": "^0.13.1",
     "webfonts-generator": "^0.3.5",
     "webpack": "2.1.0-beta.22",
+    "webpack-chunk-hash": "^0.3.0",
     "webpack-manifest-plugin": "^1.0.1",
     "yargs": "^4.6.0"
   },
